@@ -1,7 +1,9 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_reactive_ble/flutter_reactive_ble.dart';
+
 
 void main() {
   runApp(const MyApp());
@@ -15,12 +17,12 @@ class MyApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MaterialApp(
       debugShowCheckedModeBanner: false,
-      title: 'Medidor Magnetico',
+      title: 'App Semillero',
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueGrey),
+        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blueAccent),
         useMaterial3: true,
       ),
-      home: const MyHomePage(title: 'CAMPO MAGNETICO'),
+      home: const MyHomePage(title: 'Campo Magnetico'),
     );
   }
 }
@@ -45,25 +47,25 @@ class _MyHomePageState extends State<MyHomePage> {
   @override
   initState() {
     super.initState();
-    _PermisosBluetooth();
-    _escaneo = cnxBlu.scanForDevices(withServices: [Uuid.parse('19b10000-e8f2-537e-4f6c-d104768a1214')]).listen(_buscarConexion);
+    _requestPermissions();
+      _escaneo = cnxBlu.scanForDevices(withServices: [Uuid.parse('19b10000-e8f2-537e-4f6c-d104768a1214')]).listen(_onScanUpdate);
   }
 
-  Future <void> _PermisosBluetooth() async {
+  Future<void> _requestPermissions() async {
     // Verificar permisos de ubicación y Bluetooth
-    final permisoUbicacion = await Permission.location.request();
-    final permisoEscanear = await Permission.bluetoothScan.request();
-    final permisoConectar = await Permission.bluetoothConnect.request();
+    final locationPermission = await Permission.location.request();
+    final bluetoothScanPermission = await Permission.bluetoothScan.request();
+    final bluetoothConnectPermission = await Permission.bluetoothConnect.request();
 
-    if (permisoUbicacion.isGranted && permisoEscanear.isGranted && permisoConectar.isGranted) {
+    if (locationPermission.isGranted && bluetoothScanPermission.isGranted && bluetoothConnectPermission.isGranted) {
       // Proceder al escaneo solo si se otorgan todos los permisos
       _escaneo = cnxBlu.scanForDevices(
         withServices: [Uuid.parse('19b10000-e8f2-537e-4f6c-d104768a1214')],
-      ).listen(_buscarConexion);
+      ).listen(_onScanUpdate);
     } else {
       print('No se otorgaron todos los permisos necesarios.');
     }
-    if (!permisoUbicacion.isGranted || !permisoEscanear.isGranted || !permisoConectar.isGranted) {
+    if (!locationPermission.isGranted || !bluetoothScanPermission.isGranted || !bluetoothConnectPermission.isGranted) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Permisos de ubicación y Bluetooth son necesarios para usar la aplicación.')),
       );
@@ -71,22 +73,23 @@ class _MyHomePageState extends State<MyHomePage> {
 
   }
 
-  void _buscarConexion(DiscoveredDevice dispt) {
-    print('Dispositivo encontrado: ${dispt.name}, ${dispt.id}');
-    if (dispt.name == 'LED-Portenta-01' && !_encontrado) {
+  void _onScanUpdate(DiscoveredDevice d) {
+    print('Dispositivo encontrado: ${d.name}, ${d.id}');
+    if (d.name == 'LED-Portenta-01' && !_encontrado) {
       _encontrado = true;
-      _conexion = cnxBlu.connectToDevice(id: dispt.id).listen((update) {
+      _conexion = cnxBlu.connectToDevice(id: d.id).listen((update) {
         if (update.connectionState == DeviceConnectionState.connected) {
-          _conectadoAccion(dispt.id);
+          _onConnected(d.id);
         }
       });
     }
   }
 
-  void _conectadoAccion(String disptId) {
+
+  void _onConnected(String deviceId) {
 
     final characteristic = QualifiedCharacteristic(
-        deviceId: disptId,
+        deviceId: deviceId,
         serviceId: Uuid.parse('19b10000-e8f2-537e-4f6c-d104768a1214'),
         characteristicId: Uuid.parse('19b10000-e8f2-537e-4f6c-d104768a1214'));
     print('Conectado al Arduino');
@@ -94,13 +97,9 @@ class _MyHomePageState extends State<MyHomePage> {
       print('Recibido: $bytes');
       setState(() {
         if (bytes.length >= 2) {
-          // Para combinar dos bytes y convertir a entero
-          int valorEntero = (bytes[0] << 8) | bytes[1];
-          _datos = valorEntero.toString();
+          _datos = (bytes[0] | (bytes[1] << 8)).toString();
         } else {
-          // Para convertir un solo byte a entero
-          int valorEntero = bytes[0];
-          _datos = valorEntero.toString();
+          _datos = bytes[0].toString();
         }
       });
     }, onError: (error) {
@@ -113,10 +112,10 @@ class _MyHomePageState extends State<MyHomePage> {
           _encontrado = false; // Resetea la variable
           _datos = ''; // Limpia los datos
         });
-        // Vuelve a escanear por el dispositivo después de la desconexión
+        // Vuelve a escanear por dispositivos después de la desconexión
         _escaneo = cnxBlu.scanForDevices(
           withServices: [Uuid.parse('19b10000-e8f2-537e-4f6c-d104768a1214')],
-        ).listen(_buscarConexion);
+        ).listen(_onScanUpdate);
       },
     );
   }
@@ -137,23 +136,17 @@ class _MyHomePageState extends State<MyHomePage> {
             .of(context)
             .colorScheme
             .inversePrimary,
-        title: Center(
-          child: Text(widget.title),
-        )
+        title: Text(widget.title),
       ),
       body: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Text('DATOS', style: TextStyle(fontWeight: FontWeight.bold)),
-
-              _datos.isEmpty
-                  ? const CircularProgressIndicator()
-                  : Text(
-                _datos,
-                style: Theme.of(context).textTheme.headlineMedium,
-              ),
-      ],
-    )));
+          child: _datos.isEmpty
+              ? const CircularProgressIndicator()
+              : Text(
+              _datos,
+              style: Theme
+                  .of(context)
+                  .textTheme
+                  .headlineMedium)),
+          );
   }
 }
